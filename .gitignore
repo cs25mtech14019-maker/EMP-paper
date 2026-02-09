@@ -164,3 +164,24 @@ cython_debug/
 .vscode
 outputs/
 submission/
+
+# --- EMP Project Specific Ignored Files ---
+# 1. Heavy Data & Models (Crucial)
+data/
+checkpoints/
+final_model.ckpt
+*.ckpt
+onnx/
+
+# 2. Logs & Results
+saved_images/
+train_log_*.txt
+train_err_*.txt
+eval_log_*.txt
+eval_err_*.txt
+
+# 3. Binaries & Junk
+s5cmd
+s5cmd_*.tar.gz
+1
+*~

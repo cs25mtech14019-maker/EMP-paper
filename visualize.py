@@ -24,12 +24,18 @@ def main():
 
     np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
     split = "val"
-    data_root = Path("/path/to/data_root/emp")
+    
+    # I have updated this path to match your specific server setup
+    data_root = Path("/u/student/2025/cs25mtech14019/emp/data/emp")
+    
     dataset = Av2Dataset(data_root=data_root, cached_split=split)
 
     if predict:
         chkpt_fpath = "checkpoints/empd.ckpt"
-        assert os.path.exists(chkpt_fpath), "chkpt files does not exist, update path to checkpoint"
+        if not os.path.exists(chkpt_fpath):
+            print(f"ERROR: Checkpoint file not found at {chkpt_fpath}")
+            return
+            
         model = Model.load_from_checkpoint(chkpt_fpath, pretrained_weights=chkpt_fpath)
         model = model.eval().cuda()
 
@@ -43,7 +49,10 @@ def main():
         collate_fn=collate_fn,
     )
 
-    ###################################################################################################################################################################################################
+    # Create the folder to save images
+    save_dir = "saved_images"
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"Images will be saved to: {os.path.abspath(save_dir)}")
 
     for data in tqdm(dataloader):
         if predict:
@@ -56,16 +65,28 @@ def main():
 
         for b in range(0, data["x"].shape[0], 1):
             scene_id = data["scenario_id"][b]
+            
+            # This path logic matches the 'raw' folder structure we created earlier
             scene_file = data_root / ".." / split / "raw" / scene_id / ("scenario_" + scene_id + ".parquet")
             map_file = data_root / ".." / split / "raw" / scene_id / ("log_map_archive_" + scene_id + ".json")
+            
+            if not scene_file.exists():
+                print(f"Skipping {scene_id}: Raw file not found at {scene_file}")
+                continue
+
             scenario = scenario_serialization.load_argoverse_scenario_parquet(scene_file)
             static_map = ArgoverseStaticMap.from_json(map_file)
+            
             if predict:
                 prediction = batch_pred[0][b].squeeze()
                 visualize_scenario(scenario, static_map, title="{}".format(scene_id), prediction=prediction, tight=True, timestep=49 if split == "test" else 50)
             else:
                 visualize_scenario(scenario, static_map, title="{}".format(scene_id), tight=True, timestep=49 if split == "test" else 50)
-            plt.show()
+            
+            # SAVE the image to the folder
+            save_path = os.path.join(save_dir, f"{scene_id}.png")
+            plt.savefig(save_path)
+            plt.close() # Close memory to prevent crashing
 
     return
 
