@@ -153,6 +153,13 @@ class EMP(nn.Module):
 
         actor_feat = actor_feat_tmp.view(B, N, actor_feat.shape[-1])
 
+        # Agent Dropout: randomly zero out 20% of valid neighbor features during training
+        if self.training:
+            valid_neighbors = ~data["x_key_padding_mask"][:, 1:]  # [B, N-1], True = valid
+            drop_rand = torch.rand_like(valid_neighbors.float()) < 0.2
+            drop_mask = valid_neighbors & drop_rand  # only drop valid (non-padded) neighbors
+            actor_feat[:, 1:] = actor_feat[:, 1:].masked_fill(drop_mask.unsqueeze(-1), 0.0)
+
         ####################
         # LANE ENCODING
 
@@ -200,13 +207,14 @@ class EMP(nn.Module):
         x_others = x_encoder[:, 1:N]
         y_hat_others = self.dense_predictor(x_others).view(B, -1, self.future_steps, 2)
 
-        y_hat, pi = self.decoder(x_agent, x_encoder, key_padding_mask, N)
-        
+        y_hat, pi, intent_logits = self.decoder(x_agent, x_encoder, key_padding_mask, N)
+
         y_hat_eps = y_hat[:, :, -1]
 
         return {
             "y_hat": y_hat,
             "pi": pi,
+            "intent_logits": intent_logits,
             "y_hat_others": y_hat_others,
             "y_hat_eps": y_hat_eps,
             "x_agent": x_agent

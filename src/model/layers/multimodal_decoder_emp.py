@@ -30,6 +30,13 @@ class MultimodalDecoder(nn.Module):
             nn.Linear(embed_dim, 1),
         )
 
+        # Intent classification head: 3 classes (straight, left, right)
+        self.intent_head = nn.Sequential(
+            nn.Linear(embed_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 3),
+        )
+
         nn.init.orthogonal_(self.mode_embed.weight)
         return
 
@@ -37,10 +44,13 @@ class MultimodalDecoder(nn.Module):
     def forward(self, x, __1, __2, __3):
         B = x.shape[0]
 
+        # Intent prediction from focal agent token before mode broadcasting
+        intent_logits = self.intent_head(x)  # [B, 3]
+
         mode_embeds = self.mode_embed.weight.view(1, self.k, self.embed_dim).repeat(B, 1, 1)
         x = x.unsqueeze(1).repeat(1, self.k, 1) + mode_embeds
 
         loc = self.loc(x).view(-1, self.k, self.future_steps, 2)
         pi = self.pi(x).squeeze(-1)
 
-        return loc, pi
+        return loc, pi, intent_logits

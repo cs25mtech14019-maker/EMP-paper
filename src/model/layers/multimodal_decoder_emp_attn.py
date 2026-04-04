@@ -57,7 +57,14 @@ class MultimodalDecoder(nn.Module):
 
         self.pi_norm = nn.Softmax(dim=-1)
 
-        self.mode_embed = nn.Embedding(self.k, embedding_dim=embed_dim)  
+        self.mode_embed = nn.Embedding(self.k, embedding_dim=embed_dim)
+
+        # Intent classification head: 3 classes (straight, left, right)
+        self.intent_head = nn.Sequential(
+            nn.Linear(embed_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 3),
+        )
 
         self.initialize_weights()
         return
@@ -83,6 +90,9 @@ class MultimodalDecoder(nn.Module):
     def forward(self, x, x_encoder, key_padding_mask, N):
         B = x.shape[0]
 
+        # Intent prediction from focal agent token before cross-attention
+        intent_logits = self.intent_head(x)  # [B, 3]
+
         kv = x_encoder
 
         kv_agent = kv[:, 0].unsqueeze(1)
@@ -95,7 +105,7 @@ class MultimodalDecoder(nn.Module):
             intention_query = self.agent_blks[ali](intention_query, k=kv_agent, v=kv_agent, key_padding_mask=mask_agent)
             intention_query = self.lane_blks[ali](intention_query, k=kv_lane, v=kv_lane, key_padding_mask=mask_lane)
         intention_query.reshape(B, -1, self.embed_dim)
-        
+
         loc = self.loc(intention_query).view(B, self.k, self.future_steps, 2)
         pi = self.pi(intention_query).squeeze(2)
-        return loc, pi
+        return loc, pi, intent_logits

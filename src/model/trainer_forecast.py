@@ -41,6 +41,7 @@ class Trainer(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.save_hyperparameters()
+        self.register_buffer("intent_weights", torch.tensor([1.0, 4.5, 4.5]))
 
         self.history_steps = historical_steps
         self.future_steps = future_steps
@@ -94,6 +95,7 @@ class Trainer(pl.LightningModule):
 
     def cal_loss(self, out, data, batch_idx=0):
         y_hat, pi, y_hat_others = out["y_hat"], out["pi"], out["y_hat_others"]
+        intent_logits = out["intent_logits"]
         y, y_others = data["y"][:, 0], data["y"][:, 1:]
 
         loss = 0
@@ -109,15 +111,34 @@ class Trainer(pl.LightningModule):
 
         agent_cls_loss = F.cross_entropy(pi, best_mode.detach())
         loss += agent_reg_loss + agent_cls_loss
-        
+
+        # Goal-Conditioned Anchor Loss: extra penalty on final timestep endpoint
+        goal_loss = F.smooth_l1_loss(y_hat_best[:, -1, :2], y[:, -1, :])
+        loss += 1.0 * goal_loss
+
+        # Multi-Task Intent Classification: pseudo-label from GT trajectory bearing
+        # y is already relative to t=49 position (not per-step displacements)
+        y_final_pos = y[:, -1, :]  # [B, 2] — final position relative to t=49
+        bearing = torch.atan2(y_final_pos[:, 1], y_final_pos[:, 0])  # [B]
+        intent_threshold = 0.349  # ~20 degrees in radians
+        # 0 = straight, 1 = left turn, 2 = right turn
+        intent_labels = torch.zeros(B, dtype=torch.long, device=y.device)
+        intent_labels[bearing > intent_threshold] = 1
+        intent_labels[bearing < -intent_threshold] = 2
+        # Weighted CE to handle class imbalance (straight ~70%, left ~15%, right ~15%)
+        intent_loss = F.cross_entropy(intent_logits, intent_labels, weight=self.intent_weights)
+        loss += 0.5 * intent_loss
+
         others_reg_mask = ~data["x_padding_mask"][:, 1:, self.history_steps:]
         others_reg_loss = F.smooth_l1_loss(y_hat_others[others_reg_mask], y_others[others_reg_mask])
         loss += others_reg_loss
-    
+
         return {
             "loss": loss,
             "reg_loss": agent_reg_loss.item(),
             "cls_loss": agent_cls_loss.item(),
+            "goal_loss": goal_loss.item(),
+            "intent_loss": intent_loss.item(),
             "others_reg_loss": others_reg_loss.item(),
         }
 
