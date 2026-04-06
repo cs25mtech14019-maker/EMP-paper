@@ -12,10 +12,11 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(conf):
-    torch.use_deterministic_algorithms(True)
+    torch.use_deterministic_algorithms(False)
     torch.multiprocessing.set_start_method("spawn")
     pl.seed_everything(conf.seed, workers=True)
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
     output_dir = HydraConfig.get().runtime.output_dir
 
     if conf.wandb != "disable":
@@ -50,6 +51,7 @@ def main(conf):
         max_epochs=conf.epochs,
         accelerator="gpu",
         devices=conf.gpus,
+        precision=16,
         strategy="ddp_find_unused_parameters_false" if conf.gpus > 1 else None,
         callbacks=callbacks,
         limit_train_batches=conf.limit_train_batches,

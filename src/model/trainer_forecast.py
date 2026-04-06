@@ -126,7 +126,7 @@ class Trainer(pl.LightningModule):
         intent_labels[bearing > intent_threshold] = 1
         intent_labels[bearing < -intent_threshold] = 2
         # Weighted CE to handle class imbalance (straight ~70%, left ~15%, right ~15%)
-        intent_loss = F.cross_entropy(intent_logits, intent_labels, weight=self.intent_weights)
+        intent_loss = F.cross_entropy(intent_logits.float(), intent_labels, weight=self.intent_weights)
         loss += 0.5 * intent_loss
 
         others_reg_mask = ~data["x_padding_mask"][:, 1:, self.history_steps:]

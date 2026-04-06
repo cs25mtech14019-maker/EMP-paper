@@ -144,7 +144,7 @@ class EMP(nn.Module):
             actor_feat = blk(actor_feat, key_padding_mask=kpm)
         actor_feat = torch.max(actor_feat, axis=1).values
         actor_feat_tmp = torch.zeros(
-            B * N, actor_feat.shape[-1], device=actor_feat.device
+            B * N, actor_feat.shape[-1], device=actor_feat.device, dtype=actor_feat.dtype
         )
 
         #actor_feat_tmp[~hist_feat_key_padding] = actor_feat
