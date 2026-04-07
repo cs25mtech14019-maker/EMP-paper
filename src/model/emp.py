@@ -153,12 +153,8 @@ class EMP(nn.Module):
 
         actor_feat = actor_feat_tmp.view(B, N, actor_feat.shape[-1])
 
-        # Agent Dropout: randomly zero out 20% of valid neighbor features during training
-        if self.training:
-            valid_neighbors = ~data["x_key_padding_mask"][:, 1:]  # [B, N-1], True = valid
-            drop_rand = torch.rand_like(valid_neighbors.float()) < 0.2
-            drop_mask = valid_neighbors & drop_rand  # only drop valid (non-padded) neighbors
-            actor_feat[:, 1:] = actor_feat[:, 1:].masked_fill(drop_mask.unsqueeze(-1), 0.0)
+        # Agent Dropout disabled: model already has drop_path=0.2 stochastic depth
+        # in every transformer block; double regularization hurt scene understanding
 
         ####################
         # LANE ENCODING

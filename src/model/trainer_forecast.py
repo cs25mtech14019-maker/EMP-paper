@@ -41,7 +41,7 @@ class Trainer(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.save_hyperparameters()
-        self.register_buffer("intent_weights", torch.tensor([1.0, 4.5, 4.5]))
+        self.register_buffer("intent_weights", torch.tensor([1.0, 2.0, 2.0]))
 
         self.history_steps = historical_steps
         self.future_steps = future_steps
@@ -114,7 +114,7 @@ class Trainer(pl.LightningModule):
 
         # Goal-Conditioned Anchor Loss: extra penalty on final timestep endpoint
         goal_loss = F.smooth_l1_loss(y_hat_best[:, -1, :2], y[:, -1, :])
-        loss += 1.0 * goal_loss
+        loss += 0.5 * goal_loss
 
         # Multi-Task Intent Classification: pseudo-label from GT trajectory bearing
         # y is already relative to t=49 position (not per-step displacements)
@@ -127,7 +127,7 @@ class Trainer(pl.LightningModule):
         intent_labels[bearing < -intent_threshold] = 2
         # Weighted CE to handle class imbalance (straight ~70%, left ~15%, right ~15%)
         intent_loss = F.cross_entropy(intent_logits.float(), intent_labels, weight=self.intent_weights)
-        loss += 0.5 * intent_loss
+        loss += 0.3 * intent_loss
 
         others_reg_mask = ~data["x_padding_mask"][:, 1:, self.history_steps:]
         others_reg_loss = F.smooth_l1_loss(y_hat_others[others_reg_mask], y_others[others_reg_mask])
