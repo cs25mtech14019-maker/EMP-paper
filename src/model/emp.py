@@ -142,6 +142,9 @@ class EMP(nn.Module):
         kpm = hist_padding_mask.view(B*N, -1)[~hist_feat_key_padding]
         for blk in self.h_embed:
             actor_feat = blk(actor_feat, key_padding_mask=kpm)
+            
+        # Mask out padded sequence indices with -inf before pooling
+        actor_feat = actor_feat.masked_fill(kpm.unsqueeze(-1), float('-inf'))
         actor_feat = torch.max(actor_feat, axis=1).values
         actor_feat_tmp = torch.zeros(
             B * N, actor_feat.shape[-1], device=actor_feat.device, dtype=actor_feat.dtype
@@ -166,7 +169,10 @@ class EMP(nn.Module):
             [lane_normalized, (~lane_padding_mask[..., None]).float()], dim=-1
         )
         B, M, L, D = lane_normalized.shape
-        lane_feat = self.lane_embed(lane_normalized.view(-1, L, D).contiguous())
+        flat_lane_norm = lane_normalized.view(-1, L, D).contiguous()
+        flat_lane_mask = lane_padding_mask.view(-1, L).contiguous()
+        
+        lane_feat = self.lane_embed(flat_lane_norm, mask=flat_lane_mask)
         lane_feat = lane_feat.view(B, M, -1)
 
         ####################
@@ -201,7 +207,8 @@ class EMP(nn.Module):
 
         x_agent = x_encoder[:, 0] 
         x_others = x_encoder[:, 1:N]
-        y_hat_others = self.dense_predictor(x_others).view(B, -1, self.future_steps, 2)
+        y_hat_others_offsets = self.dense_predictor(x_others).view(B, -1, self.future_steps, 2)
+        y_hat_others = torch.cumsum(y_hat_others_offsets, dim=2)
 
         y_hat, pi = self.decoder(x_agent, x_encoder, key_padding_mask, N)
 

@@ -40,7 +40,8 @@ class MultimodalDecoder(nn.Module):
         mode_embeds = self.mode_embed.weight.view(1, self.k, self.embed_dim).repeat(B, 1, 1)
         x = x.unsqueeze(1).repeat(1, self.k, 1) + mode_embeds
 
-        loc = self.loc(x).view(-1, self.k, self.future_steps, 2)
+        loc_offsets = self.loc(x).view(-1, self.k, self.future_steps, 2)
+        loc = torch.cumsum(loc_offsets, dim=2)
         pi = self.pi(x).squeeze(-1)
 
         return loc, pi
