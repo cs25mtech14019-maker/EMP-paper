@@ -104,19 +104,23 @@ class Trainer(pl.LightningModule):
         best_mode = torch.argmin(l2_norm, dim=-1)
         y_hat_best = y_hat[B_range, best_mode]
 
-        # Kinematic-Aware Loss: reweight per-sample Huber loss by GT trajectory curvature.
-        # Straight samples (~70% of AV2) get weight ~1.0; hard turns get weight ~2-3x.
-        # This forces the model to stop over-optimizing easy straight drives.
+        # Hard-Negative Mining: penalty on the Top 25% hardest predictions
         per_sample_loss = F.smooth_l1_loss(y_hat_best[..., :2], y, reduction="none")  # [B, 60, 2]
         per_sample_loss = per_sample_loss.mean(dim=(-2, -1))  # [B]
 
-        vel = y[:, 1:] - y[:, :-1]          # [B, 59, 2]
-        acc = vel[:, 1:] - vel[:, :-1]      # [B, 58, 2]
-        curvature = torch.norm(acc, dim=-1).mean(dim=-1)  # [B]
-        curvature_norm = curvature / (curvature.mean() + 1e-6)
-        curve_weights = (1.0 + curvature_norm).detach()  # [B], no grad through weights
-
-        agent_reg_loss = (curve_weights * per_sample_loss).mean()
+        B = per_sample_loss.shape[0]
+        num_hard = max(1, int(B * 0.25))
+        
+        # Default weight of 1.0 to all samples
+        weights = torch.ones_like(per_sample_loss)
+        
+        # Find indices of the 25% highest losses
+        _, hard_indices = torch.topk(per_sample_loss, num_hard)
+        
+        # Apply a fixed 2.0x penalty to the hardest samples
+        weights[hard_indices] = 2.0
+        
+        agent_reg_loss = (weights * per_sample_loss).mean()
 
         agent_cls_loss = F.cross_entropy(pi, best_mode.detach())
         loss += agent_reg_loss + agent_cls_loss
@@ -130,7 +134,7 @@ class Trainer(pl.LightningModule):
             "reg_loss": agent_reg_loss.item(),
             "cls_loss": agent_cls_loss.item(),
             "others_reg_loss": others_reg_loss.item(),
-            "mean_curve_weight": curve_weights.mean().item(),
+            "mean_hnm_weight": weights.mean().item(),
         }
 
     def training_step(self, data, batch_idx):
