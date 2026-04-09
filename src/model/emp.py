@@ -146,6 +146,7 @@ class EMP(nn.Module):
         # Mask out padded sequence indices with -inf before pooling
         actor_feat = actor_feat.masked_fill(kpm.unsqueeze(-1), float('-inf'))
         actor_feat = torch.max(actor_feat, axis=1).values
+        actor_feat.masked_fill_(actor_feat == float('-inf'), 0.0)
         actor_feat_tmp = torch.zeros(
             B * N, actor_feat.shape[-1], device=actor_feat.device, dtype=actor_feat.dtype
         )

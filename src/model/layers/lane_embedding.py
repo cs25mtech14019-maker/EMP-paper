@@ -29,6 +29,7 @@ class LaneEmbeddingLayer(nn.Module):
         else:
             feature_pool = feature
         feature_global = torch.max(feature_pool, dim=2, keepdim=True)[0]  # B 256 1
+        feature_global.masked_fill_(feature_global == float('-inf'), 0.0)
             
         feature = torch.cat(
             [feature_global.expand(-1, -1, n), feature], dim=1
@@ -41,5 +42,6 @@ class LaneEmbeddingLayer(nn.Module):
         else:
             feature_pool2 = feature
         feature_global2 = torch.max(feature_pool2, dim=2, keepdim=False)[0]  # B c
+        feature_global2.masked_fill_(feature_global2 == float('-inf'), 0.0)
             
         return feature_global2
