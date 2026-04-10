@@ -208,8 +208,7 @@ class EMP(nn.Module):
 
         x_agent = x_encoder[:, 0] 
         x_others = x_encoder[:, 1:N]
-        y_hat_others_offsets = self.dense_predictor(x_others).view(B, -1, self.future_steps, 2)
-        y_hat_others = torch.cumsum(y_hat_others_offsets, dim=2)
+        y_hat_others = self.dense_predictor(x_others).view(B, -1, self.future_steps, 2)
 
         y_hat, pi = self.decoder(x_agent, x_encoder, key_padding_mask, N)
 

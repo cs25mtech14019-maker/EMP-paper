@@ -119,10 +119,9 @@ class Trainer(pl.LightningModule):
         yaw_diff = (torch.diff(yaw, dim=1) + torch.pi) % (2 * torch.pi) - torch.pi
         max_yaw = (torch.abs(yaw_diff) / dt).max(dim=-1)[0]
         
-        # Bounding limits (98th percentile roughly from AV2 profiling).
-        # We assume anything beyond 9.8 m/s^2 (~1g) or 1.5 rad/s is a fast turning noise/tracking error.
-        ACCEL_THRESHOLD = 9.8
-        YAW_THRESHOLD = 1.5
+        # Bounding limits (95th-99th percentile roughly from AV2 profiling).
+        ACCEL_THRESHOLD = 15.0
+        YAW_THRESHOLD = 2.0
         
         is_valid_hard_sample = (max_a < ACCEL_THRESHOLD) & (max_yaw < YAW_THRESHOLD)
         
@@ -148,7 +147,10 @@ class Trainer(pl.LightningModule):
         
         agent_reg_loss = (weights * per_sample_loss).mean()
 
-        agent_cls_loss = F.cross_entropy(pi, best_mode.detach())
+        soft_targets = F.softmax(-l2_norm, dim=-1)
+        log_pi = F.log_softmax(pi, dim=-1)
+        agent_cls_loss = F.kl_div(log_pi, soft_targets.detach(), reduction='batchmean')
+        
         loss += agent_reg_loss + agent_cls_loss
 
         others_reg_mask = ~data["x_padding_mask"][:, 1:, self.history_steps:]
@@ -179,8 +181,19 @@ class Trainer(pl.LightningModule):
 
         return losses["loss"]
 
+    def on_train_start(self):
+        self.start_time = time.time()
+
+    def on_train_end(self):
+        total_time = time.time() - self.start_time
+        print(f"\n[METRICS] Total Training Time: {total_time/3600:.2f} hours")
+
     def validation_step(self, data, batch_idx):
+        start_t = time.time()
         out = self(data)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        latency_ms = (time.time() - start_t) * 1000
 
         losses = self.cal_loss(out, data, -1)
         metrics = self.val_metrics(out, data["y"][:, 0])
@@ -204,6 +217,7 @@ class Trainer(pl.LightningModule):
             batch_size=1,
             sync_dist=True,
         )
+        self.log("val/latency_ms", latency_ms, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def on_test_start(self) -> None:
         save_dir = Path("./submission")
