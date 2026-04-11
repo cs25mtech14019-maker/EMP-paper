@@ -98,59 +98,13 @@ class Trainer(pl.LightningModule):
 
         loss = 0
         B = y_hat.shape[0]
-        B_range = range(B)
 
         l2_norm = torch.norm(y_hat[..., :2] - y.unsqueeze(1), dim=-1).sum(-1)
         best_mode = torch.argmin(l2_norm, dim=-1)
-        y_hat_best = y_hat[B_range, best_mode]
+        y_hat_best = y_hat[range(B), best_mode]
 
-        per_sample_loss = F.smooth_l1_loss(y_hat_best[..., :2], y, reduction="none")  # [B, 60, 2]
-        per_sample_loss = per_sample_loss.mean(dim=(-2, -1))  # [B]
-
-        # ---------------------------------------------------------------------
-        # NEW: Kinematically-Gated HNM.
-        # Calculate kinematics of ground truth to filter out sensor noise/ghosts.
-        dt = 0.1
-        v = torch.diff(y, dim=1) / dt                                       # [B, 59, 2]
-        a_mag = torch.norm(torch.diff(v, dim=1) / dt, dim=-1)               # [B, 58]
-        max_a = a_mag.max(dim=-1)[0]
-        
-        yaw = torch.atan2(v[..., 1], v[..., 0])                             # [B, 59]
-        yaw_diff = (torch.diff(yaw, dim=1) + torch.pi) % (2 * torch.pi) - torch.pi
-        max_yaw = (torch.abs(yaw_diff) / dt).max(dim=-1)[0]
-        
-        # Bounding limits (95th-99th percentile roughly from AV2 profiling).
-        ACCEL_THRESHOLD = 15.0
-        YAW_THRESHOLD = 2.0
-        
-        is_valid_hard_sample = (max_a < ACCEL_THRESHOLD) & (max_yaw < YAW_THRESHOLD)
-        
-        weights = torch.ones_like(per_sample_loss)
-        valid_indices = is_valid_hard_sample.nonzero(as_tuple=True)[0]
-        
-        if len(valid_indices) > 0:
-            valid_losses = per_sample_loss[valid_indices]
-            
-            # Target up to Top 25% of the WHOLE batch, but exclusively from valid subset
-            num_hard = max(1, int(B * 0.25))
-            num_hard = min(num_hard, len(valid_indices))
-            
-            if num_hard > 0:
-                _, hard_sub_indices = torch.topk(valid_losses, num_hard)
-                
-                # Map back to the original batch indices
-                true_hard_indices = valid_indices[hard_sub_indices]
-                
-                # Apply 2.0x HNM multiplier ONLY to valid, physically possible hard samples
-                weights[true_hard_indices] = 2.0
-        # ---------------------------------------------------------------------
-        
-        agent_reg_loss = (weights * per_sample_loss).mean()
-
-        soft_targets = F.softmax(-l2_norm, dim=-1)
-        log_pi = F.log_softmax(pi, dim=-1)
-        agent_cls_loss = F.kl_div(log_pi, soft_targets.detach(), reduction='batchmean')
-        
+        agent_reg_loss = F.smooth_l1_loss(y_hat_best[..., :2], y)
+        agent_cls_loss = F.cross_entropy(pi, best_mode.detach())
         loss += agent_reg_loss + agent_cls_loss
 
         others_reg_mask = ~data["x_padding_mask"][:, 1:, self.history_steps:]
@@ -162,7 +116,6 @@ class Trainer(pl.LightningModule):
             "reg_loss": agent_reg_loss.item(),
             "cls_loss": agent_cls_loss.item(),
             "others_reg_loss": others_reg_loss.item(),
-            "mean_hnm_weight": weights.mean().item(),
         }
 
     def training_step(self, data, batch_idx):

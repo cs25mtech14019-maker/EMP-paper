@@ -21,6 +21,6 @@ echo "Running on node: $(hostname)"
 
 # 3. YOUR COMMAND (Optimized with correct path)
 # Note: I replaced '/path/to/data_root' with your actual path
-python train.py data_root=/u/student/2025/cs25mtech14019/emp/data/emp model=emp gpus=1 batch_size=96 monitor=val_minFDE6 model.target.decoder=mlp
+python train.py data_root=/u/student/2025/cs25mtech14019/emp/data/emp model=emp gpus=1 batch_size=128 monitor=val_minFDE6 model.target.decoder=mlp
 
 echo "Job finished at $(date)"
