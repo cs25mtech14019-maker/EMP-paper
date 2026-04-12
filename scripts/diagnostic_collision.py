@@ -63,9 +63,25 @@ def main():
     top1_min_dist_all = []
     per_mode_min_dist_all = []
     top1_idx_all = []
+    gt_top1_min_dist_all = []   # sanity check: ego-GT vs other-GT (should match real collision rates)
     any_safer_count = 0
     n_scenes_seen = 0
     n_scenes_with_others = 0
+
+    def to_scene_frame(traj_local, angle, center):
+        """Rotate and translate from per-agent local frame to scene frame.
+        traj_local : (..., T, 2)
+        angle      : (...,)        heading of that agent at t=H-1
+        center     : (..., 2)      position of that agent at t=H-1
+        """
+        cos_a = torch.cos(angle).unsqueeze(-1).unsqueeze(-1)
+        sin_a = torch.sin(angle).unsqueeze(-1).unsqueeze(-1)
+        x = traj_local[..., 0:1]
+        y = traj_local[..., 1:2]
+        rx = cos_a * x - sin_a * y
+        ry = sin_a * x + cos_a * y
+        rot = torch.cat([rx, ry], dim=-1)
+        return rot + center.unsqueeze(-2)
 
     with torch.no_grad():
         for batch in dl:
@@ -75,17 +91,23 @@ def main():
                      for k, v in batch.items()}
 
             out = model(batch)
-            y_hat = out["y_hat"]                  # (B, 6, F, 2)
+            y_hat = out["y_hat"]                  # (B, 6, F, 2)   ego local frame
             pi = out["pi"]                        # (B, 6)
-            y_hat_others = out["y_hat_others"]    # (B, N-1, F, 2)
+            y_hat_others = out["y_hat_others"]    # (B, N-1, F, 2) per-agent local frame
 
             y = batch["y"]                                          # (B, N, F, 2)
             others_future_pad = batch["x_padding_mask"][:, 1:, H:]  # (B, N-1, F)
             others_valid = ~others_future_pad                       # True = real
 
-            B = y_hat.shape[0]
+            # Per-agent pose at t=H-1
+            ego_angle = batch["x_angles"][:, 0, H - 1]              # (B,)
+            ego_center = batch["x_centers"][:, 0]                   # (B, 2)
+            others_angle = batch["x_angles"][:, 1:, H - 1]          # (B, N-1)
+            others_center = batch["x_centers"][:, 1:]               # (B, N-1, 2)
 
-            # --- (1) y_hat_others quality: per-agent ADE on valid steps ---
+            B, K, _, _ = y_hat.shape
+
+            # --- (1) y_hat_others quality: per-agent ADE on valid steps (in local frame) ---
             y_others_gt = y[:, 1:]
             err = torch.norm(y_hat_others - y_others_gt, dim=-1)    # (B, N-1, F)
             valid_f = others_valid.float()
@@ -94,13 +116,35 @@ def main():
             has_any_step = valid_steps > 0                          # (B, N-1)
             others_ade_all.append(ade[has_any_step].cpu().numpy())
 
-            # --- (2) min-dist: ego mode k vs predicted other-agent trajectories ---
-            ego = y_hat[..., :2]                                    # (B, 6, F, 2)
-            diff = ego.unsqueeze(2) - y_hat_others.unsqueeze(1)     # (B, 6, N-1, F, 2)
-            dist = torch.norm(diff, dim=-1)                         # (B, 6, N-1, F)
-            valid_exp = others_valid.unsqueeze(1).expand(-1, 6, -1, -1)
+            # --- Transform to common scene frame ---
+            # Ego: expand angle/center across 6 modes, transform (B, 6, F, 2)
+            ego_angle_k = ego_angle.unsqueeze(1).expand(B, K).reshape(B * K)
+            ego_center_k = ego_center.unsqueeze(1).expand(B, K, 2).reshape(B * K, 2)
+            y_hat_flat = y_hat.reshape(B * K, y_hat.shape[-2], 2)
+            y_hat_scene = to_scene_frame(y_hat_flat, ego_angle_k, ego_center_k)
+            y_hat_scene = y_hat_scene.reshape(B, K, -1, 2)
+
+            # Others: (B, N-1, F, 2) with per-agent angle/center
+            y_hat_others_scene = to_scene_frame(
+                y_hat_others, others_angle, others_center
+            )
+
+            # GT (for sanity baseline): same transforms
+            y_ego_gt_scene = to_scene_frame(y[:, 0], ego_angle, ego_center)        # (B, F, 2)
+            y_others_gt_scene = to_scene_frame(y[:, 1:], others_angle, others_center)
+
+            # --- (2) min-dist: ego mode k vs PREDICTED other-agent trajectories (scene frame) ---
+            diff = y_hat_scene.unsqueeze(2) - y_hat_others_scene.unsqueeze(1)  # (B,6,N-1,F,2)
+            dist = torch.norm(diff, dim=-1)                                    # (B,6,N-1,F)
+            valid_exp = others_valid.unsqueeze(1).expand(-1, K, -1, -1)
             dist = dist.masked_fill(~valid_exp, float("inf"))
-            min_dist_per_mode = dist.flatten(2).min(dim=-1).values  # (B, 6)
+            min_dist_per_mode = dist.flatten(2).min(dim=-1).values             # (B, 6)
+
+            # --- (2b) Sanity: ego-GT vs other-GT min-dist (real-world collision rate) ---
+            gt_diff = y_ego_gt_scene.unsqueeze(1) - y_others_gt_scene          # (B, N-1, F, 2)
+            gt_dist = torch.norm(gt_diff, dim=-1)                              # (B, N-1, F)
+            gt_dist = gt_dist.masked_fill(~others_valid, float("inf"))
+            gt_min_dist = gt_dist.flatten(1).min(dim=-1).values                # (B,)
 
             top1 = pi.argmax(dim=-1)                                # (B,)
             top1_min_dist = min_dist_per_mode[torch.arange(B), top1]
@@ -112,6 +156,7 @@ def main():
             top1_min_dist_all.append(top1_min_dist[valid_scenes].cpu().numpy())
             per_mode_min_dist_all.append(min_dist_per_mode[valid_scenes].cpu().numpy())
             top1_idx_all.append(top1[valid_scenes].cpu().numpy())
+            gt_top1_min_dist_all.append(gt_min_dist[valid_scenes].cpu().numpy())
 
             best_safe_mode = min_dist_per_mode.argmax(dim=-1)
             any_safer = (best_safe_mode != top1) & valid_scenes
@@ -123,6 +168,7 @@ def main():
     top1_min_dist_all = np.concatenate(top1_min_dist_all)
     per_mode_min_dist_all = np.concatenate(per_mode_min_dist_all, axis=0)
     top1_idx_all = np.concatenate(top1_idx_all)
+    gt_top1_min_dist_all = np.concatenate(gt_top1_min_dist_all)
 
     N_val = len(top1_min_dist_all)
 
@@ -162,6 +208,14 @@ def main():
         bar = "#" * int(50 * h / max(1, hist.max()))
         print(f"      [{lo:>4.1f}, {hi_s}): {h:>6d}  {bar}")
 
+    print("\n[2b] SANITY: ego-GT vs other-GT min-dist (real scene collisions)")
+    print(f"    mean   : {np.mean(gt_top1_min_dist_all):.3f} m")
+    print(f"    median : {np.median(gt_top1_min_dist_all):.3f} m")
+    print(f"    p10    : {np.percentile(gt_top1_min_dist_all, 10):.3f} m")
+    gt_pct_lt = lambda thr: 100.0 * (gt_top1_min_dist_all < thr).sum() / max(1, N_val)
+    print(f"    < 1.0m : {(gt_top1_min_dist_all < 1.0).sum():>5d} / {N_val}  ({gt_pct_lt(1.0):.2f}%)")
+    print(f"    < 2.0m : {(gt_top1_min_dist_all < 2.0).sum():>5d} / {N_val}  ({gt_pct_lt(2.0):.2f}%)")
+
     print("\n[3] Opportunity: scenes where a different mode has larger clearance")
     print(f"    {any_safer_count}/{N_val} ({100.0 * any_safer_count / max(1, N_val):.1f}%)")
 
@@ -187,6 +241,7 @@ def main():
         top1_min_dist=top1_min_dist_all,
         per_mode_min_dist=per_mode_min_dist_all,
         top1_idx=top1_idx_all,
+        gt_top1_min_dist=gt_top1_min_dist_all,
     )
     print(f"\n[saved] raw arrays -> {args.out}")
 
