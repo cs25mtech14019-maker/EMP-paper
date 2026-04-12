@@ -29,6 +29,7 @@ class Trainer(pl.LightningModule):
         qkv_bias=False,
         drop_path=0.2,
         pretrained_weights: str = None,
+        teacher_weights: str = None,
         lr: float = 1e-3,
         warmup_epochs: int = 10,
         epochs: int = 60,
@@ -59,6 +60,25 @@ class Trainer(pl.LightningModule):
         if pretrained_weights is not None:
             self.net.load_from_checkpoint(pretrained_weights)
 
+        # Knowledge distillation: frozen EMP-D teacher
+        self.teacher = None
+        if teacher_weights is not None:
+            self.teacher = EMP(
+                embed_dim=dim,
+                encoder_depth=encoder_depth,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                drop_path=0.0,
+                decoder="detr"
+            )
+            ckpt = torch.load(teacher_weights, map_location="cpu")["state_dict"]
+            teacher_state = {k[len("net."):]: v for k, v in ckpt.items() if k.startswith("net.")}
+            self.teacher.load_state_dict(teacher_state, strict=False)
+            self.teacher.eval()
+            for p in self.teacher.parameters():
+                p.requires_grad = False
+
         metrics = MetricCollection(
             {
                 "minADE1": minADE(k=1),
@@ -73,6 +93,12 @@ class Trainer(pl.LightningModule):
         self.curr_ep = 0
         return
 
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.teacher is not None:
+            self.teacher.eval()
+        return self
 
     def getNet(self):
         return self.net
@@ -104,18 +130,40 @@ class Trainer(pl.LightningModule):
         y_hat_best = y_hat[range(B), best_mode]
 
         agent_reg_loss = F.smooth_l1_loss(y_hat_best[..., :2], y)
-        agent_cls_loss = F.cross_entropy(pi, best_mode.detach())
+        agent_cls_loss = F.cross_entropy(pi, best_mode.detach(), label_smoothing=0.1)
         loss += agent_reg_loss + agent_cls_loss
 
         others_reg_mask = ~data["x_padding_mask"][:, 1:, self.history_steps:]
         others_reg_loss = F.smooth_l1_loss(y_hat_others[others_reg_mask], y_others[others_reg_mask])
         loss += others_reg_loss
 
+        # Knowledge distillation losses
+        kd_cls_loss = 0.0
+        kd_feat_loss = 0.0
+        if self.teacher is not None and self.training:
+            with torch.no_grad():
+                teacher_out = self.teacher(data)
+
+            # Soft mode probability distillation (KL divergence with temperature)
+            T = 2.0
+            kd_cls_loss = F.kl_div(
+                F.log_softmax(pi / T, dim=-1),
+                F.softmax(teacher_out["pi"] / T, dim=-1),
+                reduction='batchmean'
+            ) * (T * T)
+
+            # Feature-level distillation (align encoder representations)
+            kd_feat_loss = F.mse_loss(out["x_agent"], teacher_out["x_agent"])
+
+            loss += 0.5 * kd_cls_loss + 0.5 * kd_feat_loss
+
         return {
             "loss": loss,
             "reg_loss": agent_reg_loss.item(),
             "cls_loss": agent_cls_loss.item(),
             "others_reg_loss": others_reg_loss.item(),
+            "kd_cls_loss": kd_cls_loss if isinstance(kd_cls_loss, float) else kd_cls_loss.item(),
+            "kd_feat_loss": kd_feat_loss if isinstance(kd_feat_loss, float) else kd_feat_loss.item(),
         }
 
     def training_step(self, data, batch_idx):
@@ -213,10 +261,14 @@ class Trainer(pl.LightningModule):
             nn.Parameter
         )
         for module_name, module in self.named_modules():
+            if module_name.startswith("teacher"):
+                continue
             for param_name, param in module.named_parameters():
                 full_param_name = (
                     "%s.%s" % (module_name, param_name) if module_name else param_name
                 )
+                if full_param_name.startswith("teacher"):
+                    continue
                 if "bias" in param_name:
                     no_decay.add(full_param_name)
                 elif "weight" in param_name:
@@ -228,6 +280,7 @@ class Trainer(pl.LightningModule):
                     no_decay.add(full_param_name)
         param_dict = {
             param_name: param for param_name, param in self.named_parameters()
+            if not param_name.startswith("teacher")
         }
         inter_params = decay & no_decay
         union_params = decay | no_decay

@@ -210,7 +210,8 @@ class EMP(nn.Module):
         x_others = x_encoder[:, 1:N]
         y_hat_others = self.dense_predictor(x_others).view(B, -1, self.future_steps, 2)
 
-        y_hat, pi = self.decoder(x_agent, x_encoder, key_padding_mask, N)
+        decoder_out = self.decoder(x_agent, x_encoder, key_padding_mask, N)
+        y_hat, pi = decoder_out[0], decoder_out[1]
 
         y_hat_eps = y_hat[:, :, -1]
 
