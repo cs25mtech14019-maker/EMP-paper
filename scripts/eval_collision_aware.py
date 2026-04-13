@@ -112,7 +112,13 @@ def main():
 
             B = y_hat.shape[0]
 
-            # --- Transform all trajectories to scene frame ---
+            # --- FDE/ADE in ego-local frame (y_hat and y[:,0] share this frame;
+            #     this is what training validation uses) ---
+            err_local = torch.norm(y_hat - y[:, 0:1], dim=-1)      # (B, 6, F)
+            ade = err_local.mean(dim=-1)                           # (B, 6)
+            fde = err_local[..., -1]                               # (B, 6)
+
+            # --- Scene-frame transforms (for clearance only) ---
             y_hat_scene = to_scene_frame(
                 y_hat.reshape(B * K, F, 2),
                 ego_angle.unsqueeze(1).expand(B, K).reshape(B * K),
@@ -121,17 +127,9 @@ def main():
             y_hat_others_scene = to_scene_frame(
                 y_hat_others, others_angle, others_center
             )
-            y_ego_gt_scene = to_scene_frame(y[:, 0], ego_angle, ego_center)  # (B, F, 2)
             y_others_gt_scene = to_scene_frame(
                 y[:, 1:], others_angle, others_center
             )
-
-            # --- FDE/ADE per mode (scene frame; isometric so == ego-local metric) ---
-            err = torch.norm(
-                y_hat_scene - y_ego_gt_scene.unsqueeze(1), dim=-1
-            )                                                      # (B, 6, F)
-            ade = err.mean(dim=-1)                                 # (B, 6)
-            fde = err[..., -1]                                     # (B, 6)
 
             # --- min-dist per mode vs PREDICTED others ---
             diff_pred = y_hat_scene.unsqueeze(2) - y_hat_others_scene.unsqueeze(1)
