@@ -117,6 +117,108 @@ class Trainer(pl.LightningModule):
         predictions = [predictions, out] if full else predictions
         return predictions, prob    
 
+    def predict_improved(self, data, collision_tau=2.0):
+        """Improved inference with integrated post-processing.
+
+        Applies three improvements over the paper's argmax(pi) selection:
+          1. Weighted-consensus: pick mode closest to pi-weighted centroid
+          2. Collision-aware: filter modes that come within `collision_tau` meters
+             of any other agent's predicted trajectory
+          3. Returns aggregated probability for brier computation
+
+        Returns:
+            dict with keys:
+                y_hat:          (B, 6, F, 2) all 6 mode trajectories (ego-local)
+                pi:             (B, 6) raw logits
+                pi_softmax:     (B, 6) softmax probabilities
+                y_hat_others:   (B, N-1, F, 2) other-agent predictions
+                selected:       (B,) index of selected mode per scene
+                selected_traj:  (B, F, 2) selected trajectory
+                method:         (B,) string label per scene ('consensus'/'collision'/'fallback')
+                pi_aggregated:  (B,) aggregated probability of best-mode cluster (for brier)
+        """
+        with torch.no_grad():
+            out = self.net(data)
+
+        y_hat = out["y_hat"]           # (B, 6, F, 2) ego-local
+        pi = out["pi"]                 # (B, 6) raw logits
+        y_hat_others = out["y_hat_others"]  # (B, N-1, F, 2) per-agent-local
+        B, K, F, _ = y_hat.shape
+
+        pi_soft = torch.softmax(pi.double(), dim=-1).float()  # (B, 6)
+
+        # --- Step 1: Weighted-consensus selection ---
+        endpoints = y_hat[:, :, -1, :]                          # (B, 6, 2)
+        w = pi_soft.unsqueeze(-1)                               # (B, 6, 1)
+        w_centroid = (endpoints * w).sum(dim=1) / w.sum(dim=1)  # (B, 2)
+        dist_to_wc = torch.norm(endpoints - w_centroid.unsqueeze(1), dim=-1)  # (B, 6)
+        consensus_sel = dist_to_wc.argmin(dim=1)                # (B,)
+
+        # --- Step 2: Collision-aware filtering ---
+        # Transform to scene frame for clearance computation
+        H = self.history_steps
+        ego_angle = data["x_angles"][:, 0, H - 1]
+        ego_center = data["x_centers"][:, 0]
+        others_angle = data["x_angles"][:, 1:, H - 1]
+        others_center = data["x_centers"][:, 1:]
+        others_valid = ~data["x_padding_mask"][:, 1:, H:]
+
+        def to_scene(traj, angle, center):
+            c = torch.cos(angle).unsqueeze(-1).unsqueeze(-1)
+            s = torch.sin(angle).unsqueeze(-1).unsqueeze(-1)
+            x, y = traj[..., 0:1], traj[..., 1:2]
+            return torch.cat([c*x - s*y, s*x + c*y], dim=-1) + center.unsqueeze(-2)
+
+        y_hat_scene = to_scene(
+            y_hat.reshape(B*K, F, 2),
+            ego_angle.unsqueeze(1).expand(B, K).reshape(B*K),
+            ego_center.unsqueeze(1).expand(B, K, 2).reshape(B*K, 2),
+        ).reshape(B, K, F, 2)
+
+        y_hat_others_scene = to_scene(y_hat_others, others_angle, others_center)
+
+        # Min distance per mode to any other agent
+        diff = y_hat_scene.unsqueeze(2) - y_hat_others_scene.unsqueeze(1)  # (B,6,N-1,F,2)
+        dist = torch.norm(diff, dim=-1)                                     # (B,6,N-1,F)
+        v_exp = others_valid.unsqueeze(1).expand(-1, K, -1, -1)
+        dist = dist.masked_fill(~v_exp, float("inf"))
+        min_dist = dist.flatten(2).min(dim=-1).values                       # (B, 6)
+
+        # Filter: prefer consensus mode, but if it collides, pick safest mode
+        safe_mask = min_dist >= collision_tau                                # (B, 6)
+        consensus_safe = safe_mask[torch.arange(B), consensus_sel]          # (B,)
+
+        # If consensus is safe, use it. Otherwise pick highest-pi safe mode.
+        # If no mode is safe, fall back to consensus anyway.
+        masked_pi = torch.where(safe_mask, pi_soft, torch.tensor(-1e9, device=pi.device))
+        any_safe = safe_mask.any(dim=1)
+        safe_sel = masked_pi.argmax(dim=1)
+
+        selected = torch.where(consensus_safe, consensus_sel,
+                    torch.where(any_safe, safe_sel, consensus_sel))
+
+        # --- Step 3: Mode probability aggregation ---
+        # Sum probabilities of modes whose endpoints are within 3m of best mode
+        best_by_pi = pi_soft.argmax(dim=1)  # paper's selection
+        selected_endpoint = endpoints[torch.arange(B), selected]
+        dist_to_selected = torch.norm(endpoints - selected_endpoint.unsqueeze(1), dim=-1)
+        near_mask = dist_to_selected < 3.0
+        pi_aggregated = (pi_soft * near_mask.float()).sum(dim=1)  # (B,)
+
+        selected_traj = y_hat[torch.arange(B), selected]  # (B, F, 2)
+
+        return {
+            "y_hat": y_hat,
+            "pi": pi,
+            "pi_softmax": pi_soft,
+            "y_hat_others": y_hat_others,
+            "selected": selected,
+            "selected_traj": selected_traj,
+            "paper_selected": best_by_pi,
+            "min_dist": min_dist,
+            "pi_aggregated": pi_aggregated,
+        }
+
 
     def cal_loss(self, out, data, batch_idx=0):
         y_hat, pi, y_hat_others = out["y_hat"], out["pi"], out["y_hat_others"]
