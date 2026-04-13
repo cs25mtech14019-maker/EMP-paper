@@ -41,6 +41,18 @@ from torch.utils.data import DataLoader
 from src.datamodule.av2_dataset import Av2Dataset, collate_fn
 from src.model.trainer_forecast import Trainer
 
+# Run B (2026-02-04) ckpt predates Delta-Decoding cumsum (commit 563a8aa).
+# Undo the cumsum at import time so the saved weights produce positions directly.
+import src.model.layers.multimodal_decoder_emp as _dec_mod
+def _forward_no_cumsum(self, x, __1, __2, __3):
+    B = x.shape[0]
+    mode_embeds = self.mode_embed.weight.view(1, self.k, self.embed_dim).repeat(B, 1, 1)
+    x = x.unsqueeze(1).repeat(1, self.k, 1) + mode_embeds
+    loc = self.loc(x).view(-1, self.k, self.future_steps, 2)
+    pi = self.pi(x).squeeze(-1)
+    return loc, pi
+_dec_mod.MultimodalDecoder.forward = _forward_no_cumsum
+
 
 def to_scene_frame(traj_local, angle, center):
     """Rotate by `angle` and translate by `center`. Applied per-agent."""
