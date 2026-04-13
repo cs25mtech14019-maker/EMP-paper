@@ -187,31 +187,32 @@ def main():
                      fontsize=10)
 
     # Plot paper baseline
-    plt.scatter([res_paper_nm], [res_paper_fde], color='red', s=150, zorder=5, marker='*', label='Paper Baseline')
-    plt.annotate('Paper ($\mathrm{argmax} \\pi$)', 
+    plt.scatter([res_paper_nm], [res_paper_fde], color='red', s=250, zorder=5, marker='*', label='Paper Baseline')
+    plt.annotate('Paper (argmax $\\pi$)', 
                  (res_paper_nm, res_paper_fde),
                  textcoords="offset points",
-                 xytext=(10, -5),
-                 ha='left',
+                 xytext=(-15, 10),
+                 ha='center',
                  fontsize=11, color='red', weight='bold')
     
     plt.title("Safety vs. Accuracy Trade-off (Pareto Front)", fontsize=16, pad=15)
-    plt.xlabel("Near-Miss Rate (% <2m from GT) $\\rightarrow$ Lower is safer", fontsize=12)
-    plt.ylabel("FDE$_1$ (meters) $\\rightarrow$ Lower is more accurate", fontsize=12)
-    plt.legend(fontsize=12, loc='upper right')
+    plt.xlabel("Near-Miss Rate (% <2m from GT) → Lower is safer", fontsize=12)
+    plt.ylabel("FDE$_1$ (meters) → Lower is more accurate", fontsize=12)
+    plt.legend(fontsize=12, loc='lower left')
     
-    # Formatting axes to emphasize the bottom-left being the optimal zone
+    # Formatting axes
     plt.grid(True, linestyle='--', alpha=0.7)
     
-    # Add padding to prevent the star from clipping
+    # Force axis limits to include paper star with generous padding
     ax = plt.gca()
-    xlims = ax.get_xlim()
-    ylims = ax.get_ylim()
-    # Add 5% padding on all sides relative to the current limits
-    dx = xlims[1] - xlims[0]
-    dy = ylims[1] - ylims[0]
-    ax.set_xlim(xlims[0] - dx*0.05, xlims[1] + dx*0.1)
-    ax.set_ylim(ylims[0] - dy*0.05, ylims[1] + dy*0.1)
+    all_x = res_tau_nm + [res_paper_nm]
+    all_y = res_tau_fde + [res_paper_fde]
+    xmin, xmax = min(all_x), max(all_x)
+    ymin, ymax = min(all_y), max(all_y)
+    dx = xmax - xmin
+    dy = ymax - ymin
+    ax.set_xlim(xmin - dx*0.15, xmax + dx*0.15)
+    ax.set_ylim(ymin - dy*0.15, ymax + dy*0.15)
     
     plt.tight_layout()
     
