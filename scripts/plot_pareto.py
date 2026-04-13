@@ -202,6 +202,17 @@ def main():
     
     # Formatting axes to emphasize the bottom-left being the optimal zone
     plt.grid(True, linestyle='--', alpha=0.7)
+    
+    # Add padding to prevent the star from clipping
+    ax = plt.gca()
+    xlims = ax.get_xlim()
+    ylims = ax.get_ylim()
+    # Add 5% padding on all sides relative to the current limits
+    dx = xlims[1] - xlims[0]
+    dy = ylims[1] - ylims[0]
+    ax.set_xlim(xlims[0] - dx*0.05, xlims[1] + dx*0.1)
+    ax.set_ylim(ylims[0] - dy*0.05, ylims[1] + dy*0.1)
+    
     plt.tight_layout()
     
     save_path = "pareto_plot.png"
